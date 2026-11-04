@@ -1,8 +1,10 @@
 """Use your webcam and one hand as a macOS mouse."""
 import argparse
+from collections import deque
 import ctypes as ct
 from math import dist, exp, hypot
 from pathlib import Path
+from statistics import median
 import sys
 from time import monotonic_ns
 
@@ -114,6 +116,7 @@ class GestureMouse:
         self.previous_target = None
         self.previous_time = None
         self.velocity = (0.0, 0.0)
+        self.aim_samples = deque(maxlen=3)
         self.last_click = None
         self.clicks = 1
 
@@ -176,8 +179,13 @@ class GestureMouse:
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
         dt = 1 / 30
         if self.previous_target is None:
+            self.aim_samples.clear()
             self.velocity = (0.0, 0.0)
-        else:
+        self.aim_samples.append(target)
+        if len(self.aim_samples) == self.aim_samples.maxlen:
+            # Discard a one-frame jump before it reaches the cursor filter.
+            target = tuple(median(axis) for axis in zip(*self.aim_samples))
+        if self.previous_target is not None:
             dt = max(0.001, min(0.1, (timestamp - self.previous_time) / 1000))
             blend = 1 - exp(-dt / 0.055)
             # Filter signed velocity so frame-to-frame jitter cancels instead
