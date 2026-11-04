@@ -1,7 +1,7 @@
 """Use your webcam and one hand as a macOS mouse."""
 import argparse
 import ctypes as ct
-from math import dist, exp
+from math import dist, exp, hypot
 from pathlib import Path
 import sys
 from time import monotonic_ns
@@ -21,6 +21,8 @@ INDEX, MIDDLE, RING = 8, 12, 16
 DOUBLE_CLICK_MS = 350
 PINCH_CLOSE, PINCH_OPEN = 0.28, 0.43
 DRAG_DELAY_MS = 100
+TRACKING_GRACE_MS = 90
+AIM_DEAD_ZONE = 0.002
 
 
 class Point(ct.Structure):
@@ -111,7 +113,7 @@ class GestureMouse:
         self.position = None
         self.previous_target = None
         self.previous_time = None
-        self.speed = 0.0
+        self.velocity = (0.0, 0.0)
         self.last_click = None
         self.clicks = 1
 
@@ -170,29 +172,33 @@ class GestureMouse:
             if gap < PINCH_CLOSE and pinches[runner_up] - gap >= 0.08 and self.position is not None:
                 self.begin_pinch(nearest, y, timestamp)
                 return
-            # Freeze the pointer as the fingers close, including ambiguous pinches.
-            if gap < 0.36:
-                self.previous_target = None
-                return
-
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
+        dt = 1 / 30
         if self.previous_target is None:
-            dt = 1 / 30
-            self.speed = 0.0
+            self.velocity = (0.0, 0.0)
         else:
             dt = max(0.001, min(0.1, (timestamp - self.previous_time) / 1000))
-            raw_speed = dist(target, self.previous_target) / dt
-            self.speed += (1 - exp(-dt / 0.06)) * (raw_speed - self.speed)
+            blend = 1 - exp(-dt / 0.055)
+            # Filter signed velocity so frame-to-frame jitter cancels instead
+            # of making the pointer respond as if the hand were moving fast.
+            self.velocity = tuple(
+                velocity + blend * ((new - old) / dt - velocity)
+                for velocity, new, old in zip(self.velocity, target, self.previous_target)
+            )
         self.previous_target = target
         self.previous_time = timestamp
 
         if self.position is not None:
-            # Strong smoothing for fine movements, less smoothing for sweeps.
-            response = 1 - exp(-dt * (8 + 44 * min(self.speed / 1.4, 1)))
-            target = tuple(new if new in (0, 1) else old + response * (new - old)
+            speed = hypot(*self.velocity)
+            response = 1 - exp(-dt * (6 + 46 * min(speed / 1.25, 1)))
+            distance = dist(target, self.position)
+            # A soft dead zone settles a stationary pointer without snapping
+            # when movement resumes. Screen edges remain reachable.
+            slack = max(0.0, 1 - AIM_DEAD_ZONE / max(distance, AIM_DEAD_ZONE))
+            target = tuple(new if new in (0, 1) else old + response * slack * (new - old)
                            for old, new in zip(self.position, target))
-            if dist(target, self.position) < 0.0008 and not any(
+            if dist(target, self.position) < 0.00035 and not any(
                 new in (0, 1) and new != old for old, new in zip(self.position, target)
             ):
                 return
@@ -225,6 +231,7 @@ def run(camera, model):
     capture = cv2.VideoCapture(camera)
     timestamp = -1
     fps = 0.0
+    last_hand_timestamp = None
     try:
         if not capture.isOpened():
             raise SystemExit("Could not open the webcam. Check Camera permissions or try --camera 1.")
@@ -247,9 +254,12 @@ def run(camera, model):
                 hands = tracker.detect_for_video(image, timestamp).hand_landmarks
 
                 points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]] if hands else None
+                if points is not None:
+                    last_hand_timestamp = timestamp
                 if control is not None:
                     if points is None:
-                        control.reset()
+                        if last_hand_timestamp is None or timestamp - last_hand_timestamp >= TRACKING_GRACE_MS:
+                            control.reset()
                     else:
                         try:
                             control.update(points, timestamp)
