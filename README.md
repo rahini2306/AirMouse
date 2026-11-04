@@ -33,6 +33,6 @@ In **System Settings → Privacy & Security → Accessibility**, enable the app 
 | Recalibrate | Focus the preview, keep your hand at its neutral distance, and press **R** |
 | Quit | Focus the preview and press **Q** or **Esc** |
 
-The camera preview opens paused. Press **Space**, show one hand, and hold it in a comfortable pointing position until the status says **Ready**. Move the index finger toward the camera relative to your palm to press. Moving the whole hand forward is less effective because depth is measured relative to the index knuckle. Tracking loss releases any held button. Cursor control covers the main display.
+Click **Start cursor** to aim without clicks. When you are ready to try tapping, focus the preview and press **T**. Hold your hand in a comfortable pointing position until the status says **Ready**. Move the index finger toward the camera relative to your palm to press. Moving the whole hand forward is less effective because depth is measured relative to the index knuckle. Tracking loss releases any held button. Cursor control covers the main display.
 
 Gesture design inspired by [Gesture Controlled Virtual Mouse](https://github.com/xenon-19/Gesture-Controlled-Virtual-Mouse).

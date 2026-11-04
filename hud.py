@@ -16,7 +16,11 @@ def label(frame, text, x, y, size=0.46, color=MUTED, weight=1):
                 size, color, weight, cv2.LINE_AA)
 
 
-def render(frame, points, bounds, control, permission_needed, fps):
+def start_button(width):
+    return width + 18, 434, width + 237, 471
+
+
+def render(frame, points, bounds, control, mouse_status, fps):
     height, width = frame.shape[:2]
     canvas = np.full((height + 84, width + 256, 3), (252, 251, 249), dtype=np.uint8)
     feed = canvas[48:48 + height, :width]
@@ -41,9 +45,10 @@ def render(frame, points, bounds, control, permission_needed, fps):
     status = "Paused"
     if control is not None:
         status = ("Pressing" if control.pressed else "Ready" if control.ready
-                  else "Show a hand" if points is None else "Finding neutral depth")
-    elif permission_needed:
-        status = "Accessibility needed"
+                  else "Show a hand" if points is None else "Aiming" if not control.taps_enabled
+                  else "Finding neutral depth")
+    elif mouse_status:
+        status = mouse_status
     label(canvas, status, x, 30, 0.46, BLUE, 1)
     label(canvas, "Gesture guide", x, 81, 0.62, INK, 2)
     for y, title, hint in (
@@ -56,8 +61,14 @@ def render(frame, points, bounds, control, permission_needed, fps):
         label(canvas, title, x + 27, y, 0.5, INK, 1)
         label(canvas, hint, x + 27, y + 22, 0.38)
         cv2.line(canvas, (x, y + 40), (width + 236, y + 40), (231, 225, 219), 1)
-    label(canvas, "SPACE Start / pause    R Reset    Q Quit", 16, height + 72, 0.39, INK)
-    if permission_needed:
-        label(canvas, "Enable Terminal or VS Code in macOS Accessibility, then retry.", 290,
+    if control is None:
+        left, top, right, bottom = start_button(width)
+        cv2.rectangle(canvas, (left, top), (right, bottom), BLUE, -1)
+        label(canvas, "Start cursor", left + 14, top + 24, 0.51, (255, 255, 255))
+    else:
+        label(canvas, "T   Tap clicks: " + ("ON" if control.taps_enabled else "OFF"), x, 460, 0.44, BLUE)
+    label(canvas, "SPACE Start / pause    T Tap clicks    R Reset    Q Quit", 16, height + 72, 0.39, INK)
+    if mouse_status == "Accessibility needed":
+        label(canvas, "Enable Terminal or VS Code in macOS Accessibility, then retry.", 395,
               height + 72, 0.43, BLUE)
     return canvas

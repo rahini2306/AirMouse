@@ -9,7 +9,7 @@ from time import monotonic_ns
 import cv2
 import mediapipe as mp
 
-from hud import render
+from hud import render, start_button
 
 WIDTH, HEIGHT = 960, 540
 # The inset camera area maps to the entire main display.
@@ -44,6 +44,8 @@ class MacMouse:
                 "Allow the app you launched from (Terminal or VS Code) in System Settings > "
                 "Privacy & Security > Accessibility, then reopen it and run again."
             )
+        self.cg.CGWarpMouseCursorPosition.argtypes = [Point]
+        self.cg.CGWarpMouseCursorPosition.restype = ct.c_int32
         self.cg.CGMainDisplayID.restype = ct.c_uint32
         self.cg.CGDisplayBounds.argtypes = [ct.c_uint32]
         self.cg.CGDisplayBounds.restype = Rect
@@ -62,6 +64,10 @@ class MacMouse:
         bounds = self.bounds
         point = Point(bounds.origin.x + x * (bounds.size.width - 1),
                       bounds.origin.y + y * (bounds.size.height - 1))
+        if kind == MOVE:
+            error = self.cg.CGWarpMouseCursorPosition(point)
+            if error:
+                raise RuntimeError(f"macOS could not move the cursor (Core Graphics error {error}).")
         event = self.cg.CGEventCreateMouseEvent(None, kind, point, 0)
         click_state = clicks if kind in (DOWN, UP) else None
         self.post(event, click_state)
@@ -80,6 +86,7 @@ class MacMouse:
 class GestureMouse:
     def __init__(self, mouse):
         self.mouse = mouse
+        self.taps_enabled = False
         self.pressed = False
         self.reset()
 
@@ -107,10 +114,10 @@ class GestureMouse:
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
         palm = dist(points[0], points[9])
-        if palm >= 18:
+        if self.taps_enabled and palm >= 18:
             if self.update_press(tip_depth / palm, target, timestamp):
                 return
-        else:
+        elif self.taps_enabled:
             # A small or edge-on palm makes depth unreliable. Keep aiming
             # from the fingertip while recalibrating depth on the next good frame.
             if self.pressed:
@@ -197,7 +204,16 @@ class GestureMouse:
 
 def run(camera, model):
     control = None
-    permission_needed = False
+    mouse_status = ""
+    start_requested = False
+    left, top, right, bottom = start_button(WIDTH)
+
+    def on_preview_click(event, x, y, flags, data):
+        nonlocal start_requested
+        if (event == cv2.EVENT_LBUTTONUP and control is None
+                and left <= x <= right and top <= y <= bottom):
+            start_requested = True
+
     vision = mp.tasks.vision
     options = vision.HandLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
@@ -213,6 +229,7 @@ def run(camera, model):
         with vision.HandLandmarker.create_from_options(options) as tracker:
             cv2.namedWindow("AirMouse", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
             cv2.resizeWindow("AirMouse", WIDTH + 256, HEIGHT + 84)
+            cv2.setMouseCallback("AirMouse", on_preview_click)
             while True:
                 ok, frame = capture.read()
                 if not ok:
@@ -233,27 +250,36 @@ def run(camera, model):
                         control.reset()
                     else:
                         hand = hands[0]
-                        control.update(points, (hand[8].z - hand[5].z) * WIDTH, timestamp)
+                        try:
+                            control.update(points, (hand[8].z - hand[5].z) * WIDTH, timestamp)
+                        except RuntimeError as error:
+                            print(error, file=sys.stderr)
+                            control = None
+                            mouse_status = "Cursor error. See Terminal."
 
                 preview = render(frame, points, (LEFT, TOP, RIGHT, BOTTOM),
-                                 control, permission_needed, fps)
+                                 control, mouse_status, fps)
                 cv2.imshow("AirMouse", preview)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")) or cv2.getWindowProperty("AirMouse", cv2.WND_PROP_VISIBLE) < 1:
                     break
                 if key == ord("r") and control is not None:
                     control.reset()
-                if key == ord(" "):
+                if key == ord("t") and control is not None:
+                    control.reset()
+                    control.taps_enabled = not control.taps_enabled
+                if key == ord(" ") or start_requested:
+                    start_requested = False
                     if control is not None:
                         control.reset()
                         control = None
                     else:
                         try:
                             control = GestureMouse(MacMouse())
-                            permission_needed = False
+                            mouse_status = ""
                         except SystemExit as error:
                             print(error, file=sys.stderr)
-                            permission_needed = True
+                            mouse_status = "Accessibility needed"
     finally:
         try:
             if control is not None:
