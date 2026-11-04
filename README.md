@@ -4,10 +4,10 @@ Use one hand and your webcam to control the macOS pointer across apps on your ma
 
 ## Run on macOS
 
-If AirDraw was already set up in this folder, reuse its Python environment and model:
+If AirMouse was already set up in this folder, reuse its Python environment and model:
 
 ```sh
-.venv/bin/python airdraw.py
+.venv/bin/python airmouse.py
 ```
 
 For a fresh setup, use Python 3.12 and run these commands from the project folder:
@@ -16,7 +16,7 @@ For a fresh setup, use Python 3.12 and run these commands from the project folde
 python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 curl -fL https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task -o hand_landmarker.task
-.venv/bin/python airdraw.py
+.venv/bin/python airmouse.py
 ```
 
 In **System Settings → Privacy & Security → Accessibility**, enable the app you launch from, such as Terminal or Visual Studio Code. Reopen that app after changing permission. Allow camera access when prompted. In VS Code, select **Run AirMouse** in Run and Debug once the environment is ready.

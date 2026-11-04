@@ -2,7 +2,6 @@
 __pycache__/
 .DS_Store
 *.task
-airdraw-*.png
 
 # Local environment settings and secrets
 .env
