@@ -1,7 +1,7 @@
 """Use your webcam and one hand as a macOS mouse."""
 import argparse
 import ctypes as ct
-from math import dist, hypot
+from math import dist, exp
 from pathlib import Path
 import sys
 from time import monotonic_ns
@@ -13,6 +13,8 @@ WIDTH, HEIGHT = 960, 540
 # The inset camera area maps to the entire main display.
 LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
 MOVE, DOWN, UP, DRAG = 5, 1, 2, 6
+PINCH_CLOSE, PINCH_OPEN = 0.28, 0.43
+DRAG_DELAY_MS = 100
 
 
 class Point(ct.Structure):
@@ -62,52 +64,83 @@ class MacMouse:
             self.cf.CFRelease(event)
 
 
+def hand_anchor(points):
+    return tuple((2 * index + middle + ring) / 4
+                 for index, middle, ring in zip(points[5], points[9], points[13]))
+
+
 class GestureMouse:
     def __init__(self, mouse):
         self.mouse = mouse
-        self.position = None
         self.pressed = False
-        self.ready = False
+        self.reset()
 
     def reset(self):
         if self.pressed:
             self.mouse.send(UP, self.position)
         self.pressed = False
-        self.position = None
         self.ready = False
+        self.position = None
+        self.previous_target = None
+        self.previous_time = None
+        self.speed = 0.0
+        self.pinch_started = None
+        self.aim_locked = False
 
-    def update(self, points):
+    def update(self, points, timestamp):
         palm = max(dist(points[0], points[9]), 1)
         pinch = dist(points[4], points[8]) / palm
-        # After startup or tracking loss, require an open pinch before resuming.
-        if pinch >= 0.43:
+        # Require an open pinch after startup or tracking loss.
+        if pinch >= PINCH_OPEN:
             self.ready = True
+            self.aim_locked = False
+            if self.pressed:
+                self.mouse.send(UP, self.position)
+                self.pressed = False
+                self.previous_target = None
+                return
         if not self.ready:
             return
 
-        # Freeze on the frame a pinch begins or ends so clicking does not
-        # shift the cursor as the fingertip curls.
-        if self.pressed and pinch >= 0.43:
-            self.mouse.send(UP, self.position)
-            self.pressed = False
-            return
-        if not self.pressed and pinch < 0.28:
-            if self.position is not None:
-                self.mouse.send(DOWN, self.position)
-                self.pressed = True
-            return
+        if not self.pressed and pinch < PINCH_CLOSE and self.position is not None:
+            self.mouse.send(DOWN, self.position)
+            self.pressed = True
+            self.pinch_started = timestamp
 
-        # The index knuckle is steadier than the fingertip during a pinch.
-        x, y = points[5]
+        if self.pressed:
+            if timestamp - self.pinch_started < DRAG_DELAY_MS:
+                self.previous_target = None
+                return
+        else:
+            # Hold the last aim point while the fingers close for a click.
+            self.aim_locked = self.aim_locked or pinch < 0.36
+            if self.aim_locked:
+                self.previous_target = None
+                return
+
+        # Average three palm-side knuckles to reduce noise from one landmark.
+        x, y = hand_anchor(points)
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
+        if self.previous_target is None:
+            dt = 1 / 30
+            self.speed = 0.0
+        else:
+            dt = max(0.001, min(0.1, (timestamp - self.previous_time) / 1000))
+            raw_speed = dist(target, self.previous_target) / dt
+            self.speed += (1 - exp(-dt / 0.06)) * (raw_speed - self.speed)
+        self.previous_target = target
+        self.previous_time = timestamp
+
         if self.position is not None:
-            old_x, old_y = self.position
-            dx, dy = target[0] - old_x, target[1] - old_y
-            if hypot(dx, dy) < 0.003 and all(0 < value < 1 for value in target):
-                return
-            target = tuple(new if new in (0, 1) else 0.48 * new + 0.52 * old
+            # Strong smoothing for fine movements, less smoothing for sweeps.
+            response = 1 - exp(-dt * (8 + 44 * min(self.speed / 1.4, 1)))
+            target = tuple(new if new in (0, 1) else old + response * (new - old)
                            for old, new in zip(self.position, target))
+            if dist(target, self.position) < 0.0008 and not any(
+                new in (0, 1) and new != old for old, new in zip(self.position, target)
+            ):
+                return
         self.mouse.send(DRAG if self.pressed else MOVE, target)
         self.position = target
 
@@ -138,12 +171,12 @@ def run(camera, model):
                 hands = tracker.detect_for_video(image, timestamp).hand_landmarks
 
                 if hands:
-                    points = [(int(p.x * WIDTH), int(p.y * HEIGHT)) for p in hands[0]]
+                    points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]]
                     for point in points:
-                        cv2.circle(frame, point, 3, (110, 235, 160), -1)
-                    cv2.circle(frame, points[5], 9, (0, 220, 255), 2)
+                        cv2.circle(frame, tuple(map(round, point)), 3, (110, 235, 160), -1)
+                    cv2.circle(frame, tuple(map(round, hand_anchor(points))), 9, (0, 220, 255), 2)
                     if enabled:
-                        control.update(points)
+                        control.update(points, timestamp)
                 else:
                     control.reset()
 
