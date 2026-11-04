@@ -1,0 +1,13 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run AirDraw",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/airdraw.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
