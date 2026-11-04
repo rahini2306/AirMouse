@@ -15,8 +15,8 @@ LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
 MOVE, DOWN, UP = 5, 1, 2
 CLICK_STATE = 1
 DOUBLE_CLICK_MS = 350
-TAP_START, TAP_BENT, TAP_OPEN = 0.88, 0.79, 0.93
-TAP_TIMEOUT_MS = 550
+THUMB_OPEN, THUMB_TUCKED = 0.32, 0.08
+POSE_HOLD_MS = 55
 
 
 class Point(ct.Structure):
@@ -74,9 +74,22 @@ class MacMouse:
             self.cf.CFRelease(event)
 
 
-def hand_anchor(points):
-    return tuple((2 * index + middle + ring) / 4
-                 for index, middle, ring in zip(points[5], points[9], points[13]))
+def palm_pose(points):
+    wrist, index, middle, pinky = (points[i] for i in (0, 5, 9, 17))
+    forward = (middle[0] - wrist[0], middle[1] - wrist[1])
+    thumb_side = (index[0] - pinky[0], index[1] - pinky[1])
+    palm_length = dist(wrist, middle)
+    palm_width = dist(index, pinky)
+    if palm_length < 12 or palm_width < 10:
+        return False, 0.0
+
+    def projection(tip, joint, axis):
+        return sum((end - start) * direction for end, start, direction in zip(tip, joint, axis))
+
+    fingers_open = all(projection(points[tip], points[tip - 2], forward) > 0.07 * palm_length**2
+                       for tip in (8, 12, 16, 20))
+    thumb_extension = projection(points[4], index, thumb_side) / palm_width**2
+    return fingers_open, thumb_extension
 
 
 class GestureMouse:
@@ -91,8 +104,9 @@ class GestureMouse:
         self.previous_time = None
         self.speed = 0.0
         self.last_click = None
-        self.tap_started = None
-        self.tap_bent = False
+        self.open_since = None
+        self.tuck_since = None
+        self.clicked = False
 
     def click(self, timestamp):
         clicks = 1
@@ -104,35 +118,41 @@ class GestureMouse:
         self.mouse.send(UP, self.position, clicks)
         self.last_click = (timestamp, self.position) if clicks == 1 else None
 
-    def update(self, points, index_joints, timestamp):
-        # A 3D joint-chain ratio is less sensitive to camera angle than screen distances.
-        length = sum(dist(a, b) for a, b in zip(index_joints, index_joints[1:]))
-        if length < 1e-6:
+    def update(self, points, timestamp):
+        fingers_open, thumb = palm_pose(points)
+        if not fingers_open:
             self.reset()
             return
-        straightness = dist(index_joints[0], index_joints[-1]) / length
-        if self.tap_started is not None:
-            self.tap_bent |= straightness <= TAP_BENT
-            if timestamp - self.tap_started > TAP_TIMEOUT_MS:
-                self.tap_started = None
-                self.ready = False
-            elif straightness >= TAP_OPEN:
-                if self.tap_bent:
-                    self.click(timestamp)
-                self.tap_started = None
-                return
-            else:
-                return
 
-        if straightness >= TAP_OPEN:
-            self.ready = True
-        if self.ready and self.position is not None and straightness < TAP_START:
-            self.tap_started = timestamp
-            self.tap_bent = straightness <= TAP_BENT
+        if thumb >= THUMB_OPEN:
+            self.tuck_since = None
+            if self.open_since is None:
+                self.open_since = timestamp
+            if timestamp - self.open_since >= POSE_HOLD_MS:
+                self.ready = True
+                self.clicked = False
+        else:
+            self.open_since = None
+
+        if not self.ready:
+            return
+        if thumb < 0.20:
+            # Freeze the last aim point before the thumb reaches click position.
             self.previous_target = None
+            if thumb <= THUMB_TUCKED and not self.clicked and self.position is not None:
+                if self.tuck_since is None:
+                    self.tuck_since = timestamp
+                elif timestamp - self.tuck_since >= POSE_HOLD_MS:
+                    self.click(timestamp)
+                    self.clicked = True
+            else:
+                self.tuck_since = None
+            return
+        self.tuck_since = None
+        if self.clicked:
             return
 
-        x, y = hand_anchor(points)
+        x, y = points[8]
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
         if self.previous_target is None:
@@ -181,34 +201,30 @@ def run(camera, model):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 timestamp = max(timestamp + 1, monotonic_ns() // 1_000_000)
                 image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                result = tracker.detect_for_video(image, timestamp)
-                hands = result.hand_landmarks
+                hands = tracker.detect_for_video(image, timestamp).hand_landmarks
 
                 if hands:
                     points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]]
                     for point in points:
                         cv2.circle(frame, tuple(map(round, point)), 3, (110, 235, 160), -1)
-                    cv2.circle(frame, tuple(map(round, hand_anchor(points))), 9, (0, 220, 255), 2)
-                    if enabled and result.hand_world_landmarks:
-                        index_joints = [(p.x, p.y, p.z) for p in result.hand_world_landmarks[0][5:9]]
-                        control.update(points, index_joints, timestamp)
-                    elif enabled:
-                        control.reset()
+                    cv2.circle(frame, tuple(map(round, points[8])), 9, (0, 220, 255), 2)
+                    if enabled:
+                        control.update(points, timestamp)
                 else:
                     control.reset()
 
                 status = "PAUSED"
                 if enabled:
-                    status = "POINTER ACTIVE" if control.ready else "POINT YOUR INDEX FINGER"
-                    if control.tap_started is not None:
-                        status = "TAP: STRAIGHTEN TO CLICK"
+                    status = "POINTER ACTIVE" if control.ready else "OPEN YOUR HAND"
+                    if control.clicked:
+                        status = "CLICKED: OPEN THUMB TO REARM"
                     if not hands:
                         status = "SHOW YOUR HAND"
                 cv2.rectangle(frame, (LEFT, TOP), (RIGHT, BOTTOM), (110, 235, 160), 2)
                 cv2.rectangle(frame, (0, 0), (WIDTH, 76), (30, 25, 20), -1)
                 cv2.putText(frame, f"AirMouse  |  {status}", (18, 31), cv2.FONT_HERSHEY_SIMPLEX,
                             0.75, (110, 235, 160), 2, cv2.LINE_AA)
-                cv2.putText(frame, "SPACE pause  |  Bend and straighten index to click  |  Q quit",
+                cv2.putText(frame, "SPACE pause  |  Open hand to aim  |  Tuck thumb to click  |  Q quit",
                             (18, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 245, 245), 1, cv2.LINE_AA)
                 cv2.imshow("AirMouse", frame)
                 key = cv2.waitKey(1) & 0xFF

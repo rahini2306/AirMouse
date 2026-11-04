@@ -26,12 +26,12 @@ In **System Settings → Privacy & Security → Accessibility**, enable the app 
 | Action | Gesture or key |
 | --- | --- |
 | Start or pause | Focus the AirMouse preview and press **Space** |
-| Move | Move your hand so the yellow marker stays inside the outlined camera area |
-| Click | Quickly bend and straighten your index finger |
-| Double-click | Tap twice quickly in the same spot |
-| Temporarily stop sending events | Lower your hand out of view |
+| Move | Open your hand and aim with your index fingertip |
+| Click | Keep four fingers extended and tuck your thumb toward your palm |
+| Double-click | Tuck, reopen your thumb, and tuck again quickly at the same spot |
+| Temporarily stop sending events | Close your hand or lower it out of view |
 | Quit | Focus the preview and press **Q** or **Esc** |
 
-The app starts paused. Aim with your index finger straight, then bend it briefly and straighten it like tapping an invisible button. The cursor holds its aim during the tap. Holding the finger bent or losing tracking cancels the pending tap. Cursor control covers the main display.
+The app starts paused. Face your palm toward the camera and spread your thumb to enable the pointer. The cursor holds its aim during a thumb tuck and clicks once until you open your thumb again. Cursor control covers the main display.
 
 Gesture design inspired by [Gesture Controlled Virtual Mouse](https://github.com/xenon-19/Gesture-Controlled-Virtual-Mouse).
