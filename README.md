@@ -27,11 +27,9 @@ In **System Settings → Privacy & Security → Accessibility**, enable the app 
 | --- | --- |
 | Start or pause | Focus the AirMouse preview and press **Space** |
 | Move | Move your hand so the yellow marker stays inside the outlined camera area |
-| Click | Pinch thumb to index and release |
-| Double-click | Make two quick thumb–index pinches in the same spot |
-| Right-click | Pinch thumb to middle finger and release |
-| Drag | Hold the thumb–index pinch briefly, move, then release |
-| Scroll | Hold a thumb–ring finger pinch and move your hand up or down |
+| Click | Pinch your thumb to any fingertip and release |
+| Double-click | Pinch twice quickly in the same spot |
+| Drag | Hold any pinch briefly, move, then release |
 | Temporarily stop sending events | Lower your hand out of view |
 | Quit | Focus the preview and press **Q** or **Esc** |
 
