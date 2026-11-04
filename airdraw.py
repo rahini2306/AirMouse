@@ -12,12 +12,11 @@ import mediapipe as mp
 WIDTH, HEIGHT = 960, 540
 # The inset camera area maps to the entire main display.
 LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
-MOVE, DOWN, UP, DRAG = 5, 1, 2, 6
+MOVE, DOWN, UP = 5, 1, 2
 CLICK_STATE = 1
-FINGERTIPS = (8, 12, 16, 20)
 DOUBLE_CLICK_MS = 350
-PINCH_CLOSE, PINCH_OPEN = 0.28, 0.43
-DRAG_DELAY_MS = 100
+TAP_START, TAP_BENT, TAP_OPEN = 0.88, 0.79, 0.93
+TAP_TIMEOUT_MS = 550
 
 
 class Point(ct.Structure):
@@ -83,58 +82,55 @@ def hand_anchor(points):
 class GestureMouse:
     def __init__(self, mouse):
         self.mouse = mouse
-        self.pressed = False
         self.reset()
 
     def reset(self):
-        if self.pressed:
-            self.mouse.send(UP, self.position, self.clicks)
-        self.pressed = False
         self.ready = False
         self.position = None
         self.previous_target = None
         self.previous_time = None
         self.speed = 0.0
         self.last_click = None
-        self.clicks = 1
+        self.tap_started = None
+        self.tap_bent = False
 
-    def begin_pinch(self, timestamp):
-        self.clicks = 1
+    def click(self, timestamp):
+        clicks = 1
         if self.last_click is not None:
             click_time, click_position = self.last_click
             if timestamp - click_time <= DOUBLE_CLICK_MS and dist(self.position, click_position) < 0.007:
-                self.clicks = 2
-        self.mouse.send(DOWN, self.position, self.clicks)
-        self.pressed = True
-        self.pinch_started = timestamp
-        self.previous_target = None
-        self.dragged = False
+                clicks = 2
+        self.mouse.send(DOWN, self.position, clicks)
+        self.mouse.send(UP, self.position, clicks)
+        self.last_click = (timestamp, self.position) if clicks == 1 else None
 
-    def update(self, points, timestamp):
-        palm = max(dist(points[0], points[9]), 1)
-        gap = min(dist(points[4], points[tip]) for tip in FINGERTIPS) / palm
-        if gap >= PINCH_OPEN:
-            self.ready = True
-            if self.pressed:
-                self.mouse.send(UP, self.position, self.clicks)
-                self.last_click = ((timestamp, self.position)
-                                   if not self.dragged and self.clicks == 1 else None)
-                self.pressed = False
-                self.previous_target = None
-                return
-        if not self.ready:
+    def update(self, points, index_joints, timestamp):
+        # A 3D joint-chain ratio is less sensitive to camera angle than screen distances.
+        length = sum(dist(a, b) for a, b in zip(index_joints, index_joints[1:]))
+        if length < 1e-6:
+            self.reset()
             return
-        if self.pressed:
-            if timestamp - self.pinch_started < DRAG_DELAY_MS:
+        straightness = dist(index_joints[0], index_joints[-1]) / length
+        if self.tap_started is not None:
+            self.tap_bent |= straightness <= TAP_BENT
+            if timestamp - self.tap_started > TAP_TIMEOUT_MS:
+                self.tap_started = None
+                self.ready = False
+            elif straightness >= TAP_OPEN:
+                if self.tap_bent:
+                    self.click(timestamp)
+                self.tap_started = None
                 return
-        else:
-            if gap < PINCH_CLOSE and self.position is not None:
-                self.begin_pinch(timestamp)
+            else:
                 return
-            # Hold the aim point as any finger approaches the thumb.
-            if gap < 0.36:
-                self.previous_target = None
-                return
+
+        if straightness >= TAP_OPEN:
+            self.ready = True
+        if self.ready and self.position is not None and straightness < TAP_START:
+            self.tap_started = timestamp
+            self.tap_bent = straightness <= TAP_BENT
+            self.previous_target = None
+            return
 
         x, y = hand_anchor(points)
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
@@ -158,11 +154,7 @@ class GestureMouse:
                 new in (0, 1) and new != old for old, new in zip(self.position, target)
             ):
                 return
-        if self.pressed:
-            self.mouse.send(DRAG, target)
-            self.dragged = True
-        else:
-            self.mouse.send(MOVE, target)
+        self.mouse.send(MOVE, target)
         self.position = target
 
 
@@ -189,30 +181,34 @@ def run(camera, model):
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 timestamp = max(timestamp + 1, monotonic_ns() // 1_000_000)
                 image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-                hands = tracker.detect_for_video(image, timestamp).hand_landmarks
+                result = tracker.detect_for_video(image, timestamp)
+                hands = result.hand_landmarks
 
                 if hands:
                     points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]]
                     for point in points:
                         cv2.circle(frame, tuple(map(round, point)), 3, (110, 235, 160), -1)
                     cv2.circle(frame, tuple(map(round, hand_anchor(points))), 9, (0, 220, 255), 2)
-                    if enabled:
-                        control.update(points, timestamp)
+                    if enabled and result.hand_world_landmarks:
+                        index_joints = [(p.x, p.y, p.z) for p in result.hand_world_landmarks[0][5:9]]
+                        control.update(points, index_joints, timestamp)
+                    elif enabled:
+                        control.reset()
                 else:
                     control.reset()
 
                 status = "PAUSED"
                 if enabled:
-                    status = "POINTER ACTIVE" if control.ready else "OPEN YOUR HAND"
-                    if control.pressed:
-                        status = "LEFT BUTTON HELD"
+                    status = "POINTER ACTIVE" if control.ready else "POINT YOUR INDEX FINGER"
+                    if control.tap_started is not None:
+                        status = "TAP: STRAIGHTEN TO CLICK"
                     if not hands:
                         status = "SHOW YOUR HAND"
                 cv2.rectangle(frame, (LEFT, TOP), (RIGHT, BOTTOM), (110, 235, 160), 2)
                 cv2.rectangle(frame, (0, 0), (WIDTH, 76), (30, 25, 20), -1)
                 cv2.putText(frame, f"AirMouse  |  {status}", (18, 31), cv2.FONT_HERSHEY_SIMPLEX,
                             0.75, (110, 235, 160), 2, cv2.LINE_AA)
-                cv2.putText(frame, "SPACE pause  |  Pinch thumb to any finger to click or drag  |  Q quit",
+                cv2.putText(frame, "SPACE pause  |  Bend and straighten index to click  |  Q quit",
                             (18, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 245, 245), 1, cv2.LINE_AA)
                 cv2.imshow("AirMouse", frame)
                 key = cv2.waitKey(1) & 0xFF
