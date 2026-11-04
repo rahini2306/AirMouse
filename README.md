@@ -26,13 +26,15 @@ In **System Settings → Privacy & Security → Accessibility**, enable the app 
 | Action | Gesture or key |
 | --- | --- |
 | Start or pause | Focus the AirMouse preview and press **Space** |
-| Move | Aim with your index fingertip |
-| Click | Push the index finger toward the webcam, then pull back |
-| Double-click | Tap twice quickly at the same spot |
-| Hold / drag | Press toward the webcam, wait briefly, then move sideways before releasing |
-| Recalibrate | Focus the preview, keep your hand at its neutral distance, and press **R** |
+| Move | Move your hand inside the marked camera area |
+| Left-click | Pinch thumb and index finger, then release |
+| Double-click | Make two quick thumb–index pinches in the same spot |
+| Right-click | Pinch thumb and middle finger, then release |
+| Drag | Hold a thumb–index pinch briefly, then move your hand |
+| Scroll | Hold a thumb–ring finger pinch and move up or down |
+| Reset tracking | Focus the preview and press **R** |
 | Quit | Focus the preview and press **Q** or **Esc** |
 
-Click **Start cursor** to aim without clicks. When you are ready to try tapping, focus the preview and press **T**. Hold your hand in a comfortable pointing position until the status says **Ready**. Move the index finger toward the camera relative to your palm to press. Moving the whole hand forward is less effective because depth is measured relative to the index knuckle. Tracking loss releases any held button. Cursor control covers the main display.
+Click **Start cursor** and show one hand with your fingertips separated. If tracking drops during a drag, AirMouse releases the mouse button. Cursor control covers the main display.
 
 Gesture design inspired by [Gesture Controlled Virtual Mouse](https://github.com/xenon-19/Gesture-Controlled-Virtual-Mouse).

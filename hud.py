@@ -20,7 +20,7 @@ def start_button(width):
     return width + 18, 434, width + 237, 471
 
 
-def render(frame, points, bounds, control, mouse_status, fps):
+def render(frame, points, bounds, control, mouse_status, fps, left_finger):
     height, width = frame.shape[:2]
     canvas = np.full((height + 84, width + 256, 3), (252, 251, 249), dtype=np.uint8)
     feed = canvas[48:48 + height, :width]
@@ -36,7 +36,7 @@ def render(frame, points, bounds, control, mouse_status, fps):
             cv2.polylines(feed, [joints[list(finger)]], False, GREEN, 2, cv2.LINE_AA)
         for joint in joints:
             cv2.circle(feed, tuple(joint), 3, RED, -1, cv2.LINE_AA)
-        if control is not None and control.pressed:
+        if control is not None and control.active_finger == left_finger:
             cv2.circle(feed, tuple(joints[8]), 11, (255, 255, 255), 2, cv2.LINE_AA)
 
     label(canvas, "AirMouse", 16, 32, 0.72, INK, 2)
@@ -44,18 +44,18 @@ def render(frame, points, bounds, control, mouse_status, fps):
     x = width + 18
     status = "Paused"
     if control is not None:
-        status = ("Pressing" if control.pressed else "Ready" if control.ready
-                  else "Show a hand" if points is None else "Aiming" if not control.taps_enabled
-                  else "Finding neutral depth")
+        status = ("Show a hand" if points is None else "Pinch active" if control.active_finger is not None
+                  else "Aiming" if control.ready else "Open your fingers")
     elif mouse_status:
         status = mouse_status
     label(canvas, status, x, 30, 0.46, BLUE, 1)
     label(canvas, "Gesture guide", x, 81, 0.62, INK, 2)
     for y, title, hint in (
-        (127, "Aim", "Move your index fingertip"),
-        (200, "Tap", "Push forward, then release"),
-        (273, "Double tap", "Tap twice at the same spot"),
-        (346, "Hold / drag", "Press, wait, then move"),
+        (127, "Left-click", "Thumb + index, then release"),
+        (187, "Double-click", "Two quick index pinches"),
+        (247, "Right-click", "Thumb + middle, then release"),
+        (307, "Drag", "Hold index pinch and move"),
+        (367, "Scroll", "Hold ring pinch and move up/down"),
     ):
         cv2.circle(canvas, (x + 9, y - 5), 6, BLUE, -1, cv2.LINE_AA)
         label(canvas, title, x + 27, y, 0.5, INK, 1)
@@ -65,9 +65,7 @@ def render(frame, points, bounds, control, mouse_status, fps):
         left, top, right, bottom = start_button(width)
         cv2.rectangle(canvas, (left, top), (right, bottom), BLUE, -1)
         label(canvas, "Start cursor", left + 14, top + 24, 0.51, (255, 255, 255))
-    else:
-        label(canvas, "T   Tap clicks: " + ("ON" if control.taps_enabled else "OFF"), x, 460, 0.44, BLUE)
-    label(canvas, "SPACE Start / pause    T Tap clicks    R Reset    Q Quit", 16, height + 72, 0.39, INK)
+    label(canvas, "SPACE Start / pause    R Reset    Q Quit", 16, height + 72, 0.39, INK)
     if mouse_status == "Accessibility needed":
         label(canvas, "Enable Terminal or VS Code in macOS Accessibility, then retry.", 395,
               height + 72, 0.43, BLUE)
