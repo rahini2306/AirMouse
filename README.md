@@ -1,34 +1,35 @@
-# AirDraw
+# AirMouse
 
-Draw on a virtual canvas using a webcam and one hand. AirDraw runs locally with Python, OpenCV, and MediaPipe Hand Landmarker.
+Use one hand and your webcam to control the macOS pointer across apps on your main display. MediaPipe tracks hand landmarks, OpenCV shows the camera preview, and macOS Core Graphics sends mouse events.
 
 ## Run on macOS
 
-Use Python 3.12. If it is missing and you use Homebrew, install it with `brew install python@3.12`. Open Terminal in the extracted AirDraw folder and run:
+If AirDraw was already set up in this folder, reuse its Python environment and model:
+
+```sh
+.venv/bin/python airdraw.py
+```
+
+For a fresh setup, use Python 3.12 and run these commands from the project folder:
 
 ```sh
 python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
+.venv/bin/python -m pip install -r requirements.txt
 curl -fL https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task -o hand_landmarker.task
-python airdraw.py
+.venv/bin/python airdraw.py
 ```
 
-Allow camera access when macOS prompts. If necessary, check System Settings → Privacy & Security → Camera. Use `python airdraw.py --camera 1` to try a second camera.
+In **System Settings → Privacy & Security → Accessibility**, enable the app you launch from, such as Terminal or Visual Studio Code. Reopen that app after changing permission. Allow camera access when prompted. In VS Code, select **Run AirMouse** in Run and Debug once the environment is ready.
 
 ## Controls
 
-- Move your index fingertip below the toolbar. Pinch your thumb and index finger to draw and release to lift the pen.
-- Hold your unpinched index fingertip over a toolbar button for about two-thirds of a second. The bar shows selection progress.
-- Choose among four colors, erase, undo, clear, or export a clean PNG into the current directory. Undo supports the last 20 edits, including clear.
-- Press **U** for undo, **S** to save, or **Q** / **Esc** to quit.
+| Action | Gesture or key |
+| --- | --- |
+| Start or pause | Focus the AirMouse preview and press **Space** |
+| Move | Move your index knuckle inside the outlined camera area |
+| Click | Pinch thumb to index and release |
+| Drag | Hold the pinch while moving, then release |
+| Temporarily stop sending events | Lower your hand out of view |
+| Quit | Focus the preview and press **Q** or **Esc** |
 
-## Design and demo
-
-The pinch threshold scales with palm size, and opening and closing use different thresholds to reduce flicker. AirDraw smooths the cursor and ends a stroke if tracking drops, so reacquiring a hand does not connect two strokes. After a drop, release and pinch again to resume.
-
-Draw two strokes, move your hand out of frame, and return elsewhere. Release and pinch to start a third stroke. Show undo, then export the drawing.
-
-## VS Code
-
-Open `AirDraw.code-workspace`. After setup, select `.venv/bin/python` using **Python: Select Interpreter** if needed, then choose **Run AirDraw** in Run and Debug.
+The app starts paused. If tracking is lost mid-drag, AirMouse releases the mouse button. When tracking returns, open your pinch before resuming. Cursor control covers the main display.

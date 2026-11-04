@@ -1,130 +1,131 @@
-"""Webcam drawing with pinch-to-ink and dwell-to-select."""
+"""Use your webcam and one hand as a macOS mouse."""
 import argparse
-from datetime import datetime
-from math import dist
+import ctypes as ct
+from math import dist, hypot
 from pathlib import Path
+import sys
 from time import monotonic_ns
 
 import cv2
 import mediapipe as mp
-import numpy as np
 
 WIDTH, HEIGHT = 960, 540
-BAR = 64
-COLORS = ((240, 170, 35), (135, 70, 240), (75, 195, 90), (30, 30, 30))
-TOOLS = ("Blue", "Pink", "Green", "Black", "Eraser", "Undo", "Clear", "Save")
-CELL = WIDTH // len(TOOLS)
-LINKS = [(0, 5), (5, 9), (9, 13), (13, 17), (17, 0)]
-for base in (1, 5, 9, 13, 17):
-    LINKS.extend((i, i + 1) for i in range(base, base + 3))
-LINKS.append((0, 1))
+# The inset camera area maps to the entire main display.
+LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
+MOVE, DOWN, UP, DRAG = 5, 1, 2, 6
 
 
-class Canvas:
+class Point(ct.Structure):
+    _fields_ = [("x", ct.c_double), ("y", ct.c_double)]
+
+
+class Size(ct.Structure):
+    _fields_ = [("width", ct.c_double), ("height", ct.c_double)]
+
+
+class Rect(ct.Structure):
+    _fields_ = [("origin", Point), ("size", Size)]
+
+
+class MacMouse:
     def __init__(self):
-        self.image = np.full((HEIGHT - BAR, WIDTH, 3), 255, dtype=np.uint8)
-        self.history = []
-        self.previous = None
-        self.tool = 0
-        self.notice = ""
+        self.cg = ct.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+        self.cf = ct.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+        self.cg.CGPreflightPostEventAccess.restype = ct.c_bool
+        if not self.cg.CGPreflightPostEventAccess():
+            raise SystemExit(
+                "Allow the app you launched from (Terminal or VS Code) in System Settings > "
+                "Privacy & Security > Accessibility, then reopen it and run again."
+            )
+        self.cg.CGMainDisplayID.restype = ct.c_uint32
+        self.cg.CGDisplayBounds.argtypes = [ct.c_uint32]
+        self.cg.CGDisplayBounds.restype = Rect
+        self.bounds = self.cg.CGDisplayBounds(self.cg.CGMainDisplayID())
+        self.cg.CGEventCreateMouseEvent.argtypes = [ct.c_void_p, ct.c_uint32, Point, ct.c_uint32]
+        self.cg.CGEventCreateMouseEvent.restype = ct.c_void_p
+        self.cg.CGEventPost.argtypes = [ct.c_uint32, ct.c_void_p]
+        self.cg.CGEventPost.restype = None
+        self.cf.CFRelease.argtypes = [ct.c_void_p]
+        self.cf.CFRelease.restype = None
 
-    def checkpoint(self):
-        self.history.append(self.image.copy())
-        if len(self.history) > 20:
-            self.history.pop(0)
-
-    def stroke(self, point):
-        x, y = point
-        point = (x, y - BAR)
-        if self.previous is None:
-            self.checkpoint()
-            self.previous = point
-        erasing = self.tool == 4
-        color = (255, 255, 255) if erasing else COLORS[self.tool]
-        cv2.line(self.image, self.previous, point, color, 28 if erasing else 5, cv2.LINE_AA)
-        self.previous = point
-
-    def select(self, slot):
-        self.previous = None
-        self.notice = ""
-        if slot < 5:
-            self.tool = slot
-        elif slot == 5 and self.history:
-            self.image = self.history.pop()
-        elif slot == 6 and np.any(self.image != 255):
-            self.checkpoint()
-            self.image.fill(255)
-        elif slot == 7:
-            path = Path(f"airdraw-{datetime.now():%Y%m%d-%H%M%S-%f}.png")
-            try:
-                saved = cv2.imwrite(str(path), self.image)
-            except cv2.error:
-                saved = False
-            self.notice = f"Saved {path.name}" if saved else "Could not save PNG"
+    def send(self, kind, position):
+        x, y = position
+        bounds = self.bounds
+        point = Point(bounds.origin.x + x * (bounds.size.width - 1),
+                      bounds.origin.y + y * (bounds.size.height - 1))
+        event = self.cg.CGEventCreateMouseEvent(None, kind, point, 0)
+        if not event:
+            raise RuntimeError("macOS could not create a mouse event")
+        try:
+            self.cg.CGEventPost(0, event)
+        finally:
+            self.cf.CFRelease(event)
 
 
-class Gesture:
-    def __init__(self):
-        self.reset()
+class GestureMouse:
+    def __init__(self, mouse):
+        self.mouse = mouse
+        self.position = None
+        self.pressed = False
+        self.ready = False
 
     def reset(self):
-        self.pinched = False
+        if self.pressed:
+            self.mouse.send(UP, self.position)
+        self.pressed = False
+        self.position = None
         self.ready = False
-        self.smooth = None
-        self.hover = None
-        self.hover_since = 0
-        self.selected = False
 
-    def update(self, points, now, canvas):
+    def update(self, points):
         palm = max(dist(points[0], points[9]), 1)
-        ratio = dist(points[4], points[8]) / palm
-        self.pinched = ratio < (0.43 if self.pinched else 0.30)
-        if ratio >= 0.43:
+        pinch = dist(points[4], points[8]) / palm
+        # After startup or tracking loss, require an open pinch before resuming.
+        if pinch >= 0.43:
             self.ready = True
-        x, y = points[8]
-        if y < BAR:
-            canvas.previous = None
-            self.smooth = None
-            if self.pinched:
-                self.ready = False
-            slot = x // CELL if self.ready and not self.pinched else None
-            if slot != self.hover:
-                self.hover = slot
-                self.hover_since = now
-                self.selected = False
-            if slot is not None and not self.selected and now - self.hover_since >= 650:
-                canvas.select(slot)
-                self.selected = True
-            return x, y
+        if not self.ready:
+            return
 
-        self.hover = None
-        self.smooth = ((x, y) if self.smooth is None else
-                       (0.55 * x + 0.45 * self.smooth[0], 0.55 * y + 0.45 * self.smooth[1]))
-        cursor = tuple(map(round, self.smooth))
-        if self.ready and self.pinched:
-            canvas.stroke(cursor)
-        else:
-            canvas.previous = None
-        return cursor
+        # Freeze on the frame a pinch begins or ends so clicking does not
+        # shift the cursor as the fingertip curls.
+        if self.pressed and pinch >= 0.43:
+            self.mouse.send(UP, self.position)
+            self.pressed = False
+            return
+        if not self.pressed and pinch < 0.28:
+            if self.position is not None:
+                self.mouse.send(DOWN, self.position)
+                self.pressed = True
+            return
 
-
-def label(image, text, position, scale=0.55, color=(240, 240, 240)):
-    cv2.putText(image, text, position, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+        # The index knuckle is steadier than the fingertip during a pinch.
+        x, y = points[5]
+        target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
+                  max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
+        if self.position is not None:
+            old_x, old_y = self.position
+            dx, dy = target[0] - old_x, target[1] - old_y
+            if hypot(dx, dy) < 0.003 and all(0 < value < 1 for value in target):
+                return
+            target = tuple(new if new in (0, 1) else 0.48 * new + 0.52 * old
+                           for old, new in zip(self.position, target))
+        self.mouse.send(DRAG if self.pressed else MOVE, target)
+        self.position = target
 
 
 def run(camera, model):
+    control = GestureMouse(MacMouse())
     vision = mp.tasks.vision
     options = vision.HandLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
         running_mode=vision.RunningMode.VIDEO,
         num_hands=1,
     )
-    canvas, gesture = Canvas(), Gesture()
     capture = cv2.VideoCapture(camera)
+    enabled = False
     timestamp = -1
     try:
         if not capture.isOpened():
-            raise SystemExit("Could not open the webcam. Check camera permissions or try --camera 1.")
+            raise SystemExit("Could not open the webcam. Check Camera permissions or try --camera 1.")
         with vision.HandLandmarker.create_from_options(options) as tracker:
             while True:
                 ok, frame = capture.read()
@@ -133,48 +134,42 @@ def run(camera, model):
                 frame = cv2.flip(cv2.resize(frame, (WIDTH, HEIGHT)), 1)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 timestamp = max(timestamp + 1, monotonic_ns() // 1_000_000)
-                result = tracker.detect_for_video(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb), timestamp)
-                cursor = None
-                if result.hand_landmarks:
-                    points = [(min(WIDTH - 1, max(0, int(p.x * WIDTH))),
-                               min(HEIGHT - 1, max(0, int(p.y * HEIGHT))))
-                              for p in result.hand_landmarks[0]]
-                    cursor = gesture.update(points, timestamp, canvas)
-                    for start, end in LINKS:
-                        cv2.line(frame, points[start], points[end], (100, 255, 175), 2, cv2.LINE_AA)
-                else:
-                    canvas.previous = None
-                    gesture.reset()
+                image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                hands = tracker.detect_for_video(image, timestamp).hand_landmarks
 
-                frame[:BAR] = (36, 31, 28)
-                frame[BAR:] = cv2.addWeighted(frame[BAR:], 0.24, canvas.image, 0.76, 0)
-                for i, name in enumerate(TOOLS):
-                    x = i * CELL
-                    if i == canvas.tool:
-                        cv2.rectangle(frame, (x + 2, 3), (x + CELL - 3, BAR - 4), (200, 200, 200), 1)
-                    if i < len(COLORS):
-                        cv2.circle(frame, (x + 15, 31), 5, COLORS[i], -1)
-                    label(frame, name, (x + 26, 37))
-                    if i == gesture.hover:
-                        progress = min(1, (timestamp - gesture.hover_since) / 650)
-                        cv2.line(frame, (x + 2, BAR - 5), (x + 2 + int((CELL - 5) * progress), BAR - 5),
-                                 (100, 255, 175), 3)
-                if cursor is not None:
-                    cv2.circle(frame, cursor, 7, (35, 145, 40) if gesture.pinched else (20, 20, 20), 2)
-                status = canvas.notice or ("Show one hand to start" if cursor is None else
-                                           "Pinch to draw | Release to hover | U undo | S save | Q quit")
-                cv2.rectangle(frame, (0, HEIGHT - 29), (WIDTH, HEIGHT), (36, 31, 28), -1)
-                label(frame, status, (12, HEIGHT - 9))
-                cv2.imshow("AirDraw", frame)
+                if hands:
+                    points = [(int(p.x * WIDTH), int(p.y * HEIGHT)) for p in hands[0]]
+                    for point in points:
+                        cv2.circle(frame, point, 3, (110, 235, 160), -1)
+                    cv2.circle(frame, points[5], 9, (0, 220, 255), 2)
+                    if enabled:
+                        control.update(points)
+                else:
+                    control.reset()
+
+                status = "PAUSED"
+                if enabled:
+                    status = ("SHOW YOUR HAND" if not hands else "OPEN PINCH TO RESUME" if not control.ready
+                              else "DRAGGING" if control.pressed else "POINTER ACTIVE")
+                cv2.rectangle(frame, (LEFT, TOP), (RIGHT, BOTTOM), (110, 235, 160), 2)
+                cv2.rectangle(frame, (0, 0), (WIDTH, 76), (30, 25, 20), -1)
+                cv2.putText(frame, f"AirMouse  |  {status}", (18, 31), cv2.FONT_HERSHEY_SIMPLEX,
+                            0.75, (110, 235, 160), 2, cv2.LINE_AA)
+                cv2.putText(frame, "SPACE start/pause  |  Pinch click or drag  |  Q quit",
+                            (18, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 245, 245), 1, cv2.LINE_AA)
+                cv2.imshow("AirMouse", frame)
                 key = cv2.waitKey(1) & 0xFF
-                if key in (27, ord("q")) or cv2.getWindowProperty("AirDraw", cv2.WND_PROP_VISIBLE) < 1:
+                if key in (27, ord("q")) or cv2.getWindowProperty("AirMouse", cv2.WND_PROP_VISIBLE) < 1:
                     break
-                if key in (ord("u"), ord("s")):
-                    canvas.select(5 if key == ord("u") else 7)
-                    gesture.ready = False
+                if key == ord(" "):
+                    control.reset()
+                    enabled = not enabled
     finally:
-        capture.release()
-        cv2.destroyAllWindows()
+        try:
+            control.reset()
+        finally:
+            capture.release()
+            cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
@@ -182,6 +177,8 @@ if __name__ == "__main__":
     parser.add_argument("--camera", type=int, default=0)
     parser.add_argument("--model", type=Path, default=Path(__file__).with_name("hand_landmarker.task"))
     args = parser.parse_args()
+    if sys.platform != "darwin":
+        parser.error("AirMouse currently supports macOS.")
     if not args.model.is_file():
-        parser.error("Hand Landmarker model missing. See the download command in README.md.")
+        parser.error("Hand Landmarker model missing. See README.md.")
     run(args.camera, args.model)
