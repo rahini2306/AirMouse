@@ -26,12 +26,13 @@ In **System Settings → Privacy & Security → Accessibility**, enable the app 
 | Action | Gesture or key |
 | --- | --- |
 | Start or pause | Focus the AirMouse preview and press **Space** |
-| Move | Open your hand and aim with your index fingertip |
-| Click | Keep four fingers extended and tuck your thumb toward your palm |
-| Double-click | Tuck, reopen your thumb, and tuck again quickly at the same spot |
-| Temporarily stop sending events | Close your hand or lower it out of view |
+| Move | Aim with your index fingertip |
+| Click | Push the index finger toward the webcam, then pull back |
+| Double-click | Tap twice quickly at the same spot |
+| Hold / drag | Press toward the webcam, wait briefly, then move sideways before releasing |
+| Recalibrate | Focus the preview, keep your hand at its neutral distance, and press **R** |
 | Quit | Focus the preview and press **Q** or **Esc** |
 
-The app starts paused. Face your palm toward the camera and spread your thumb to enable the pointer. The cursor holds its aim during a thumb tuck and clicks once until you open your thumb again. Cursor control covers the main display.
+The camera preview opens paused. Press **Space**, show one hand, and hold it in a comfortable pointing position until the status says **Ready**. Move the index finger toward the camera relative to your palm to press. Moving the whole hand forward is less effective because depth is measured relative to the index knuckle. Tracking loss releases any held button. Cursor control covers the main display.
 
 Gesture design inspired by [Gesture Controlled Virtual Mouse](https://github.com/xenon-19/Gesture-Controlled-Virtual-Mouse).

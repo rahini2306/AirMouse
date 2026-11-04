@@ -14,11 +14,12 @@ from hud import render
 WIDTH, HEIGHT = 960, 540
 # The inset camera area maps to the entire main display.
 LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
-MOVE, DOWN, UP = 5, 1, 2
+MOVE, DOWN, UP, DRAG = 5, 1, 2, 6
 CLICK_STATE = 1
 DOUBLE_CLICK_MS = 350
-THUMB_OPEN, THUMB_TUCKED = 0.32, 0.08
-POSE_HOLD_MS = 55
+PRESS_DEPTH, RELEASE_DEPTH = 0.18, 0.08
+HOLD_MS = 180
+CALIBRATION_MS = 220
 
 
 class Point(ct.Structure):
@@ -76,83 +77,75 @@ class MacMouse:
             self.cf.CFRelease(event)
 
 
-def palm_pose(points):
-    wrist, index, middle, pinky = (points[i] for i in (0, 5, 9, 17))
-    forward = (middle[0] - wrist[0], middle[1] - wrist[1])
-    thumb_side = (index[0] - pinky[0], index[1] - pinky[1])
-    palm_length = dist(wrist, middle)
-    palm_width = dist(index, pinky)
-    if palm_length < 12 or palm_width < 10:
-        return False, 0.0
-
-    def projection(tip, joint, axis):
-        return sum((end - start) * direction for end, start, direction in zip(tip, joint, axis))
-
-    fingers_open = all(projection(points[tip], points[tip - 2], forward) > 0.07 * palm_length**2
-                       for tip in (8, 12, 16, 20))
-    thumb_extension = projection(points[4], index, thumb_side) / palm_width**2
-    return fingers_open, thumb_extension
-
-
 class GestureMouse:
     def __init__(self, mouse):
         self.mouse = mouse
+        self.pressed = False
         self.reset()
 
     def reset(self):
-        self.ready = False
+        if self.pressed:
+            self.mouse.send(UP, self.position, self.clicks)
+        self.pressed = False
         self.position = None
         self.previous_target = None
         self.previous_time = None
         self.speed = 0.0
         self.last_click = None
-        self.open_since = None
-        self.tuck_since = None
-        self.clicked = False
+        self.baseline = None
+        self.depth = None
+        self.calibration_start = None
+        self.press_since = None
 
-    def click(self, timestamp):
-        clicks = 1
-        if self.last_click is not None:
-            click_time, click_position = self.last_click
-            if timestamp - click_time <= DOUBLE_CLICK_MS and dist(self.position, click_position) < 0.007:
-                clicks = 2
-        self.mouse.send(DOWN, self.position, clicks)
-        self.mouse.send(UP, self.position, clicks)
-        self.last_click = (timestamp, self.position) if clicks == 1 else None
+    @property
+    def ready(self):
+        return self.baseline is not None
 
-    def update(self, points, timestamp):
-        fingers_open, thumb = palm_pose(points)
-        if not fingers_open:
+    def update(self, points, tip_depth, timestamp):
+        palm = dist(points[0], points[9])
+        if palm < 18:
             self.reset()
             return
-
-        if thumb >= THUMB_OPEN:
-            self.tuck_since = None
-            if self.open_since is None:
-                self.open_since = timestamp
-            if timestamp - self.open_since >= POSE_HOLD_MS:
-                self.ready = True
-                self.clicked = False
-        else:
-            self.open_since = None
-
+        sample = tip_depth / palm
+        if self.depth is None:
+            self.depth = sample
+            self.calibration_start = timestamp
+        self.depth += 0.55 * (sample - self.depth)
         if not self.ready:
-            return
-        if thumb < 0.20:
-            # Freeze the last aim point before the thumb reaches click position.
-            self.previous_target = None
-            if thumb <= THUMB_TUCKED and not self.clicked and self.position is not None:
-                if self.tuck_since is None:
-                    self.tuck_since = timestamp
-                elif timestamp - self.tuck_since >= POSE_HOLD_MS:
-                    self.click(timestamp)
-                    self.clicked = True
+            if timestamp - self.calibration_start >= CALIBRATION_MS:
+                self.baseline = self.depth
+        else:
+            push = self.baseline - self.depth
+            if self.pressed:
+                if push <= RELEASE_DEPTH:
+                    self.mouse.send(UP, self.position, self.clicks)
+                    self.last_click = ((timestamp, self.position)
+                                       if not self.dragged and self.clicks == 1 else None)
+                    self.pressed = False
+                    self.press_since = None
+                    return
+                if timestamp - self.down_time < HOLD_MS:
+                    return
+            elif self.position is not None and push >= RELEASE_DEPTH:
+                self.previous_target = None
+                if push < PRESS_DEPTH:
+                    self.press_since = None
+                elif self.press_since is None:
+                    self.press_since = timestamp
+                elif timestamp - self.press_since >= 25:
+                    self.clicks = 1
+                    if self.last_click is not None:
+                        when, where = self.last_click
+                        if timestamp - when <= DOUBLE_CLICK_MS and dist(self.position, where) < 0.01:
+                            self.clicks = 2
+                    self.mouse.send(DOWN, self.position, self.clicks)
+                    self.pressed = True
+                    self.dragged = False
+                    self.down_time = timestamp
+                return
             else:
-                self.tuck_since = None
-            return
-        self.tuck_since = None
-        if self.clicked:
-            return
+                self.press_since = None
+                self.baseline += 0.04 * (self.depth - self.baseline)
 
         x, y = points[8]
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
@@ -176,12 +169,15 @@ class GestureMouse:
                 new in (0, 1) and new != old for old, new in zip(self.position, target)
             ):
                 return
-        self.mouse.send(MOVE, target)
+        self.mouse.send(DRAG if self.pressed else MOVE, target)
+        if self.pressed:
+            self.dragged = True
         self.position = target
 
 
 def run(camera, model):
-    control = GestureMouse(MacMouse())
+    control = None
+    permission_needed = False
     vision = mp.tasks.vision
     options = vision.HandLandmarkerOptions(
         base_options=mp.tasks.BaseOptions(model_asset_path=str(model)),
@@ -189,7 +185,6 @@ def run(camera, model):
         num_hands=1,
     )
     capture = cv2.VideoCapture(camera)
-    enabled = False
     timestamp = -1
     fps = 0.0
     try:
@@ -197,7 +192,7 @@ def run(camera, model):
             raise SystemExit("Could not open the webcam. Check Camera permissions or try --camera 1.")
         with vision.HandLandmarker.create_from_options(options) as tracker:
             cv2.namedWindow("AirMouse", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
-            cv2.resizeWindow("AirMouse", WIDTH + 288, HEIGHT + 94)
+            cv2.resizeWindow("AirMouse", WIDTH + 256, HEIGHT + 84)
             while True:
                 ok, frame = capture.read()
                 if not ok:
@@ -213,23 +208,36 @@ def run(camera, model):
                 hands = tracker.detect_for_video(image, timestamp).hand_landmarks
 
                 points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]] if hands else None
-                if enabled and points is not None:
-                    control.update(points, timestamp)
-                elif points is None:
-                    control.reset()
+                if control is not None:
+                    if points is None:
+                        control.reset()
+                    else:
+                        hand = hands[0]
+                        control.update(points, (hand[8].z - hand[5].z) * WIDTH, timestamp)
 
                 preview = render(frame, points, (LEFT, TOP, RIGHT, BOTTOM),
-                                 enabled, control.ready, control.clicked, fps)
+                                 control, permission_needed, fps)
                 cv2.imshow("AirMouse", preview)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")) or cv2.getWindowProperty("AirMouse", cv2.WND_PROP_VISIBLE) < 1:
                     break
-                if key == ord(" "):
+                if key == ord("r") and control is not None:
                     control.reset()
-                    enabled = not enabled
+                if key == ord(" "):
+                    if control is not None:
+                        control.reset()
+                        control = None
+                    else:
+                        try:
+                            control = GestureMouse(MacMouse())
+                            permission_needed = False
+                        except SystemExit as error:
+                            print(error, file=sys.stderr)
+                            permission_needed = True
     finally:
         try:
-            control.reset()
+            if control is not None:
+                control.reset()
         finally:
             capture.release()
             cv2.destroyAllWindows()
