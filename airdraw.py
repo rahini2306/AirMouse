@@ -96,60 +96,28 @@ class GestureMouse:
         self.depth = None
         self.calibration_start = None
         self.press_since = None
+        self.press_target = None
 
     @property
     def ready(self):
         return self.baseline is not None
 
     def update(self, points, tip_depth, timestamp):
-        palm = dist(points[0], points[9])
-        if palm < 18:
-            self.reset()
-            return
-        sample = tip_depth / palm
-        if self.depth is None:
-            self.depth = sample
-            self.calibration_start = timestamp
-        self.depth += 0.55 * (sample - self.depth)
-        if not self.ready:
-            if timestamp - self.calibration_start >= CALIBRATION_MS:
-                self.baseline = self.depth
-        else:
-            push = self.baseline - self.depth
-            if self.pressed:
-                if push <= RELEASE_DEPTH:
-                    self.mouse.send(UP, self.position, self.clicks)
-                    self.last_click = ((timestamp, self.position)
-                                       if not self.dragged and self.clicks == 1 else None)
-                    self.pressed = False
-                    self.press_since = None
-                    return
-                if timestamp - self.down_time < HOLD_MS:
-                    return
-            elif self.position is not None and push >= RELEASE_DEPTH:
-                self.previous_target = None
-                if push < PRESS_DEPTH:
-                    self.press_since = None
-                elif self.press_since is None:
-                    self.press_since = timestamp
-                elif timestamp - self.press_since >= 25:
-                    self.clicks = 1
-                    if self.last_click is not None:
-                        when, where = self.last_click
-                        if timestamp - when <= DOUBLE_CLICK_MS and dist(self.position, where) < 0.01:
-                            self.clicks = 2
-                    self.mouse.send(DOWN, self.position, self.clicks)
-                    self.pressed = True
-                    self.dragged = False
-                    self.down_time = timestamp
-                return
-            else:
-                self.press_since = None
-                self.baseline += 0.04 * (self.depth - self.baseline)
-
         x, y = points[8]
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
+        palm = dist(points[0], points[9])
+        if palm >= 18:
+            if self.update_press(tip_depth / palm, target, timestamp):
+                return
+        else:
+            # A small or edge-on palm makes depth unreliable. Keep aiming
+            # from the fingertip while recalibrating depth on the next good frame.
+            if self.pressed:
+                self.mouse.send(UP, self.position, self.clicks)
+                self.pressed = False
+            self.baseline = self.depth = self.press_since = self.last_click = None
+
         if self.previous_target is None:
             dt = 1 / 30
             self.speed = 0.0
@@ -173,6 +141,58 @@ class GestureMouse:
         if self.pressed:
             self.dragged = True
         self.position = target
+
+
+    def update_press(self, sample, target, timestamp):
+        if self.depth is None:
+            self.depth = sample
+            self.calibration_start = timestamp
+        self.depth += 0.55 * (sample - self.depth)
+        if not self.ready:
+            if timestamp - self.calibration_start >= CALIBRATION_MS:
+                self.baseline = self.depth
+            return False
+
+        push = self.baseline - self.depth
+        if self.pressed:
+            if push <= RELEASE_DEPTH:
+                self.mouse.send(UP, self.position, self.clicks)
+                self.last_click = ((timestamp, self.position)
+                                   if not self.dragged and self.clicks == 1 else None)
+                self.pressed = False
+                self.press_since = None
+                return True
+            return timestamp - self.down_time < HOLD_MS
+
+        if self.position is None or push < PRESS_DEPTH:
+            self.press_since = None
+            rate = 0.22 if self.depth > self.baseline else 0.04
+            self.baseline += rate * (self.depth - self.baseline)
+            return False
+
+        if self.press_since is None:
+            self.press_since = timestamp
+            self.press_target = target
+            return False
+        if dist(target, self.press_target) > 0.018:
+            # A sideways sweep is aiming, even when the depth estimate drifts.
+            self.press_since = None
+            self.baseline = self.depth
+            return False
+        if timestamp - self.press_since < 25:
+            return False
+
+        self.clicks = 1
+        if self.last_click is not None:
+            when, where = self.last_click
+            if timestamp - when <= DOUBLE_CLICK_MS and dist(self.position, where) < 0.01:
+                self.clicks = 2
+        self.mouse.send(DOWN, self.position, self.clicks)
+        self.pressed = True
+        self.dragged = False
+        self.down_time = timestamp
+        self.previous_target = None
+        return True
 
 
 def run(camera, model):
