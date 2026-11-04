@@ -9,6 +9,8 @@ from time import monotonic_ns
 import cv2
 import mediapipe as mp
 
+from hud import render
+
 WIDTH, HEIGHT = 960, 540
 # The inset camera area maps to the entire main display.
 LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
@@ -189,44 +191,36 @@ def run(camera, model):
     capture = cv2.VideoCapture(camera)
     enabled = False
     timestamp = -1
+    fps = 0.0
     try:
         if not capture.isOpened():
             raise SystemExit("Could not open the webcam. Check Camera permissions or try --camera 1.")
         with vision.HandLandmarker.create_from_options(options) as tracker:
+            cv2.namedWindow("AirMouse", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+            cv2.resizeWindow("AirMouse", WIDTH + 288, HEIGHT + 94)
             while True:
                 ok, frame = capture.read()
                 if not ok:
                     raise SystemExit("The webcam stopped returning frames.")
                 frame = cv2.flip(cv2.resize(frame, (WIDTH, HEIGHT)), 1)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                previous_timestamp = timestamp
                 timestamp = max(timestamp + 1, monotonic_ns() // 1_000_000)
+                if previous_timestamp >= 0:
+                    sample = 1000 / (timestamp - previous_timestamp)
+                    fps = 0.9 * fps + 0.1 * sample if fps else sample
                 image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 hands = tracker.detect_for_video(image, timestamp).hand_landmarks
 
-                if hands:
-                    points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]]
-                    for point in points:
-                        cv2.circle(frame, tuple(map(round, point)), 3, (110, 235, 160), -1)
-                    cv2.circle(frame, tuple(map(round, points[8])), 9, (0, 220, 255), 2)
-                    if enabled:
-                        control.update(points, timestamp)
-                else:
+                points = [(p.x * WIDTH, p.y * HEIGHT) for p in hands[0]] if hands else None
+                if enabled and points is not None:
+                    control.update(points, timestamp)
+                elif points is None:
                     control.reset()
 
-                status = "PAUSED"
-                if enabled:
-                    status = "POINTER ACTIVE" if control.ready else "OPEN YOUR HAND"
-                    if control.clicked:
-                        status = "CLICKED: OPEN THUMB TO REARM"
-                    if not hands:
-                        status = "SHOW YOUR HAND"
-                cv2.rectangle(frame, (LEFT, TOP), (RIGHT, BOTTOM), (110, 235, 160), 2)
-                cv2.rectangle(frame, (0, 0), (WIDTH, 76), (30, 25, 20), -1)
-                cv2.putText(frame, f"AirMouse  |  {status}", (18, 31), cv2.FONT_HERSHEY_SIMPLEX,
-                            0.75, (110, 235, 160), 2, cv2.LINE_AA)
-                cv2.putText(frame, "SPACE pause  |  Open hand to aim  |  Tuck thumb to click  |  Q quit",
-                            (18, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 245, 245), 1, cv2.LINE_AA)
-                cv2.imshow("AirMouse", frame)
+                preview = render(frame, points, (LEFT, TOP, RIGHT, BOTTOM),
+                                 enabled, control.ready, control.clicked, fps)
+                cv2.imshow("AirMouse", preview)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (27, ord("q")) or cv2.getWindowProperty("AirMouse", cv2.WND_PROP_VISIBLE) < 1:
                     break
