@@ -13,6 +13,10 @@ WIDTH, HEIGHT = 960, 540
 # The inset camera area maps to the entire main display.
 LEFT, RIGHT, TOP, BOTTOM = 155, 805, 95, 455
 MOVE, DOWN, UP, DRAG = 5, 1, 2, 6
+RIGHT_DOWN, RIGHT_UP = 3, 4
+CLICK_STATE = 1
+INDEX, MIDDLE, RING = 8, 12, 16
+DOUBLE_CLICK_MS = 350
 PINCH_CLOSE, PINCH_OPEN = 0.28, 0.43
 DRAG_DELAY_MS = 100
 
@@ -45,20 +49,36 @@ class MacMouse:
         self.bounds = self.cg.CGDisplayBounds(self.cg.CGMainDisplayID())
         self.cg.CGEventCreateMouseEvent.argtypes = [ct.c_void_p, ct.c_uint32, Point, ct.c_uint32]
         self.cg.CGEventCreateMouseEvent.restype = ct.c_void_p
+        self.cg.CGEventSetIntegerValueField.argtypes = [ct.c_void_p, ct.c_uint32, ct.c_int64]
+        self.cg.CGEventSetIntegerValueField.restype = None
+        self.cg.CGEventCreateScrollWheelEvent2.argtypes = [
+            ct.c_void_p, ct.c_uint32, ct.c_uint32, ct.c_int32, ct.c_int32, ct.c_int32
+        ]
+        self.cg.CGEventCreateScrollWheelEvent2.restype = ct.c_void_p
         self.cg.CGEventPost.argtypes = [ct.c_uint32, ct.c_void_p]
         self.cg.CGEventPost.restype = None
         self.cf.CFRelease.argtypes = [ct.c_void_p]
         self.cf.CFRelease.restype = None
 
-    def send(self, kind, position):
+    def send(self, kind, position, clicks=1):
         x, y = position
         bounds = self.bounds
         point = Point(bounds.origin.x + x * (bounds.size.width - 1),
                       bounds.origin.y + y * (bounds.size.height - 1))
-        event = self.cg.CGEventCreateMouseEvent(None, kind, point, 0)
+        button = int(kind in (RIGHT_DOWN, RIGHT_UP))
+        event = self.cg.CGEventCreateMouseEvent(None, kind, point, button)
+        click_state = clicks if kind in (DOWN, UP, RIGHT_DOWN, RIGHT_UP) else None
+        self.post(event, click_state)
+
+    def scroll(self, pixels):
+        self.post(self.cg.CGEventCreateScrollWheelEvent2(None, 0, 1, pixels, 0, 0))
+
+    def post(self, event, click_state=None):
         if not event:
             raise RuntimeError("macOS could not create a mouse event")
         try:
+            if click_state is not None:
+                self.cg.CGEventSetIntegerValueField(event, CLICK_STATE, click_state)
             self.cg.CGEventPost(0, event)
         finally:
             self.cf.CFRelease(event)
@@ -72,54 +92,81 @@ def hand_anchor(points):
 class GestureMouse:
     def __init__(self, mouse):
         self.mouse = mouse
-        self.pressed = False
+        self.active_finger = None
         self.reset()
 
     def reset(self):
-        if self.pressed:
-            self.mouse.send(UP, self.position)
-        self.pressed = False
+        if self.active_finger == INDEX:
+            self.mouse.send(UP, self.position, self.clicks)
+        self.active_finger = None
         self.ready = False
         self.position = None
         self.previous_target = None
         self.previous_time = None
         self.speed = 0.0
-        self.pinch_started = None
-        self.aim_locked = False
+        self.last_click = None
+        self.clicks = 1
+
+    def begin_pinch(self, finger, y, timestamp):
+        self.active_finger = finger
+        self.pinch_started = timestamp
+        self.previous_target = None
+        self.dragged = False
+        if finger == INDEX:
+            self.clicks = 1
+            if self.last_click is not None:
+                click_time, click_position = self.last_click
+                if timestamp - click_time <= DOUBLE_CLICK_MS and dist(self.position, click_position) < 0.007:
+                    self.clicks = 2
+            self.mouse.send(DOWN, self.position, self.clicks)
+        else:
+            self.last_click = None
+            self.scroll_y = y
+
+    def finish_pinch(self, timestamp):
+        if self.active_finger == INDEX:
+            self.mouse.send(UP, self.position, self.clicks)
+            self.last_click = ((timestamp, self.position)
+                               if not self.dragged and self.clicks == 1 else None)
+        elif self.active_finger == MIDDLE:
+            self.mouse.send(RIGHT_DOWN, self.position)
+            self.mouse.send(RIGHT_UP, self.position)
+        self.active_finger = None
+        self.ready = False
+        self.previous_target = None
 
     def update(self, points, timestamp):
         palm = max(dist(points[0], points[9]), 1)
-        pinch = dist(points[4], points[8]) / palm
-        # Require an open pinch after startup or tracking loss.
-        if pinch >= PINCH_OPEN:
-            self.ready = True
-            self.aim_locked = False
-            if self.pressed:
-                self.mouse.send(UP, self.position)
-                self.pressed = False
-                self.previous_target = None
+        pinches = {finger: dist(points[4], points[finger]) / palm for finger in (INDEX, MIDDLE, RING)}
+        x, y = hand_anchor(points)
+        if self.active_finger is not None:
+            if pinches[self.active_finger] >= PINCH_OPEN:
+                self.finish_pinch(timestamp)
                 return
-        if not self.ready:
-            return
-
-        if not self.pressed and pinch < PINCH_CLOSE and self.position is not None:
-            self.mouse.send(DOWN, self.position)
-            self.pressed = True
-            self.pinch_started = timestamp
-
-        if self.pressed:
-            if timestamp - self.pinch_started < DRAG_DELAY_MS:
-                self.previous_target = None
+            if self.active_finger == RING:
+                delta = self.scroll_y - y
+                if abs(delta) >= 3:
+                    self.mouse.scroll(round(max(-90, min(90, delta * 2))))
+                    self.scroll_y = y
+                return
+            if self.active_finger == MIDDLE or timestamp - self.pinch_started < DRAG_DELAY_MS:
                 return
         else:
-            # Hold the last aim point while the fingers close for a click.
-            self.aim_locked = self.aim_locked or pinch < 0.36
-            if self.aim_locked:
+            ordered = sorted(pinches, key=pinches.get)
+            nearest, runner_up = ordered[:2]
+            gap = pinches[nearest]
+            if gap >= PINCH_OPEN:
+                self.ready = True
+            if not self.ready:
+                return
+            if gap < PINCH_CLOSE and pinches[runner_up] - gap >= 0.08 and self.position is not None:
+                self.begin_pinch(nearest, y, timestamp)
+                return
+            # Freeze the pointer as the fingers close, including ambiguous pinches.
+            if gap < 0.36:
                 self.previous_target = None
                 return
 
-        # Average three palm-side knuckles to reduce noise from one landmark.
-        x, y = hand_anchor(points)
         target = (max(0, min(1, (x - LEFT) / (RIGHT - LEFT))),
                   max(0, min(1, (y - TOP) / (BOTTOM - TOP))))
         if self.previous_target is None:
@@ -141,7 +188,11 @@ class GestureMouse:
                 new in (0, 1) and new != old for old, new in zip(self.position, target)
             ):
                 return
-        self.mouse.send(DRAG if self.pressed else MOVE, target)
+        if self.active_finger == INDEX:
+            self.mouse.send(DRAG, target)
+            self.dragged = True
+        else:
+            self.mouse.send(MOVE, target)
         self.position = target
 
 
@@ -182,13 +233,18 @@ def run(camera, model):
 
                 status = "PAUSED"
                 if enabled:
-                    status = ("SHOW YOUR HAND" if not hands else "OPEN PINCH TO RESUME" if not control.ready
-                              else "DRAGGING" if control.pressed else "POINTER ACTIVE")
+                    status = {
+                        INDEX: "LEFT BUTTON HELD",
+                        MIDDLE: "RIGHT CLICK ON RELEASE",
+                        RING: "SCROLLING",
+                    }.get(control.active_finger, "POINTER ACTIVE" if control.ready else "OPEN YOUR PINCH")
+                    if not hands:
+                        status = "SHOW YOUR HAND"
                 cv2.rectangle(frame, (LEFT, TOP), (RIGHT, BOTTOM), (110, 235, 160), 2)
                 cv2.rectangle(frame, (0, 0), (WIDTH, 76), (30, 25, 20), -1)
                 cv2.putText(frame, f"AirMouse  |  {status}", (18, 31), cv2.FONT_HERSHEY_SIMPLEX,
                             0.75, (110, 235, 160), 2, cv2.LINE_AA)
-                cv2.putText(frame, "SPACE start/pause  |  Pinch click or drag  |  Q quit",
+                cv2.putText(frame, "SPACE pause  |  Thumb + index: click/drag  |  Middle: right click  |  Ring: scroll  |  Q quit",
                             (18, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 245, 245), 1, cv2.LINE_AA)
                 cv2.imshow("AirMouse", frame)
                 key = cv2.waitKey(1) & 0xFF

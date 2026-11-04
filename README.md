@@ -26,10 +26,15 @@ In **System Settings → Privacy & Security → Accessibility**, enable the app 
 | Action | Gesture or key |
 | --- | --- |
 | Start or pause | Focus the AirMouse preview and press **Space** |
-| Move | Move your index knuckle inside the outlined camera area |
+| Move | Move your hand so the yellow marker stays inside the outlined camera area |
 | Click | Pinch thumb to index and release |
-| Drag | Hold the pinch while moving, then release |
+| Double-click | Make two quick thumb–index pinches in the same spot |
+| Right-click | Pinch thumb to middle finger and release |
+| Drag | Hold the thumb–index pinch briefly, move, then release |
+| Scroll | Hold a thumb–ring finger pinch and move your hand up or down |
 | Temporarily stop sending events | Lower your hand out of view |
 | Quit | Focus the preview and press **Q** or **Esc** |
 
 The app starts paused. If tracking is lost mid-drag, AirMouse releases the mouse button. When tracking returns, open your pinch before resuming. Cursor control covers the main display.
+
+Gesture design inspired by [Gesture Controlled Virtual Mouse](https://github.com/xenon-19/Gesture-Controlled-Virtual-Mouse).
